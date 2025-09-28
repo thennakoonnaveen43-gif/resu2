@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, jsonb, timestamp, primaryKey } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -143,40 +143,62 @@ export const resumes = pgTable("resumes", {
   name: text("name").notNull().default("Untitled Resume"),
   templateId: text("template_id").notNull().default("1"),
   data: jsonb("data").$type<z.infer<typeof resumeDataSchema>>().notNull(),
-  style: jsonb("style").$type<z.infer<typeof styleSchema>>().notNull().default({
-    headerFontSize: 18,
-    bodyFontSize: 12,
-    sectionSpacing: 16,
-    sidebarSectionSpacing:16,
-    lineHeight: 1.5,
-    marginTop: 20,
-    marginBottom: 20,
-    marginLeft: 20,
-    marginRight: 20,
-    sidebarWidth: 40,
-    colors: {
-      primary: "#3b82f6",
-      secondary: "#64748b",
-      accent: "#06b6d4",
-      background: "#ffffff",
-      sidebarBackground: "#1e293b",
-      headerTextColor: "#1e293b",
-      bodyTextColor: "#374151",
-      sidebarTextColor: "#ffffff",
-    },
-    referencePlacement: "sidebar",
-    aboutMePlacement: "sidebar",
-  }),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Template definitions table
+export const templates = pgTable("templates", {
+  id: varchar("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  defaultStyle: jsonb("default_style").$type<z.infer<typeof styleSchema>>().notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Resume-specific template styles table
+export const resumeStyles = pgTable("resume_styles", {
+  resumeId: varchar("resume_id").notNull().references(() => resumes.id, { onDelete: "cascade" }),
+  templateId: varchar("template_id").notNull().references(() => templates.id),
+  style: jsonb("style").$type<z.infer<typeof styleSchema>>().notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.resumeId, table.templateId] }),
+}));
+
+// Template schema
+const templateSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+  defaultStyle: styleSchema,
 });
 
 export const insertResumeSchema = createInsertSchema(resumes).omit({
   id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertTemplateSchema = createInsertSchema(templates).omit({
+  createdAt: true,
+});
+
+export const insertResumeStyleSchema = createInsertSchema(resumeStyles).omit({
+  createdAt: true,
+  updatedAt: true,
 });
 
 export const updateResumeSchema = insertResumeSchema.partial();
+export const updateResumeStyleSchema = insertResumeStyleSchema.partial();
 
 export type InsertResume = z.infer<typeof insertResumeSchema>;
+export type InsertTemplate = z.infer<typeof insertTemplateSchema>;
+export type InsertResumeStyle = z.infer<typeof insertResumeStyleSchema>;
 export type Resume = typeof resumes.$inferSelect;
+export type Template = typeof templates.$inferSelect;
+export type ResumeStyle = typeof resumeStyles.$inferSelect;
 export type ResumeData = z.infer<typeof resumeDataSchema>;
 export type StyleSettings = z.infer<typeof styleSchema>;
 export type presetSettings = z.infer<typeof presetSchema>;
@@ -203,5 +225,6 @@ export {
   languageSchema,
   interestSchema,
   referenceSchema,
-  presetSchema
+  presetSchema,
+  templateSchema
 };

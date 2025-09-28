@@ -6,6 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { FileText, Save, Download, Printer } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useTemplateStyles, useTemplates } from "@/hooks/use-template-styles";
+import { usePDFGenerator } from "@/hooks/use-pdf-generator";
 import type { presetSettings, Resume, ResumeData, StyleSettings } from "@shared/schema";
 
 // Import template components
@@ -54,7 +56,18 @@ export default function ResumeBuilder() {
     certifications: [],
     references: [],
   });
-  const [styleSettings, setStyleSettings] = useState<StyleSettings>({
+  const [templateId, setTemplateId] = useState("1");
+  const { toast } = useToast();
+
+  const resumeId = params?.id;
+  
+  // Use template styles hook
+  const { style: styleSettings, styleLoading, saveStyle, isSaving } = useTemplateStyles(resumeId, templateId);
+  const { data: templates } = useTemplates();
+  const { generatePDF, isGenerating } = usePDFGenerator();
+  
+  // Default style settings for when no custom style exists
+  const defaultStyleSettings: StyleSettings = {
     headerFontSize: 18,
     bodyFontSize: 12,
     sectionSpacing: 16,
@@ -77,11 +90,9 @@ export default function ResumeBuilder() {
       bodyTextColor: "#374151",
       sidebarTextColor: "#ffffff",
     },
-  });
-  const [templateId, setTemplateId] = useState("1");
-  const { toast } = useToast();
-
-  const resumeId = params?.id;
+  };
+  
+  const currentStyle = styleSettings || defaultStyleSettings;
 
   useEffect(() => {
     if (params?.template) {
@@ -155,33 +166,39 @@ export default function ResumeBuilder() {
 
   // Load resume data when query succeeds
   useEffect(() => {
-    if (resume && resume.data && resume.style && resume.templateId) {
+    if (resume && resume.data) {
       setResumeData(resume.data);
-      if (!params?.preset) {
-        setStyleSettings(resume.style);
-      }
 
       if (!params?.template) {
-        setTemplateId(resume.templateId);
+        setTemplateId(resume.templateId || "5");
       }
-
     }
   }, [resume]);
 
-  // Auto-save functionality
+  // Auto-save functionality for resume data
   useEffect(() => {
     if (!resumeId || isLoading) return;
 
     const timeoutId = setTimeout(() => {
       updateResumeMutation.mutate({
         data: resumeData,
-        style: styleSettings,
         templateId,
       });
     }, 1000);
 
     return () => clearTimeout(timeoutId);
-  }, [resumeData, styleSettings, templateId, resumeId, isLoading]);
+  }, [resumeData, templateId, resumeId, isLoading]);
+
+  // Auto-save functionality for style settings
+  useEffect(() => {
+    if (!resumeId || styleLoading || !styleSettings) return;
+
+    const timeoutId = setTimeout(() => {
+      saveStyle(styleSettings);
+    }, 1000);
+
+    return () => clearTimeout(timeoutId);
+  }, [styleSettings, resumeId, styleLoading, saveStyle]);
 
   // Create new resume if no ID provided
   useEffect(() => {
@@ -191,7 +208,6 @@ export default function ResumeBuilder() {
         templateId: "1",
         userId: "anonymous",
         data: resumeData,
-        style: styleSettings,
       });
     }
   }, []);
@@ -201,7 +217,10 @@ export default function ResumeBuilder() {
   };
 
   const handleStyleChange = (newStyle: Partial<StyleSettings>) => {
-    setStyleSettings(prev => ({ ...prev, ...newStyle }));
+    if (!styleSettings) return;
+    
+    const updatedStyle = { ...styleSettings, ...newStyle };
+    saveStyle(updatedStyle);
   };
 
   const handleTemplateChange = (newTemplateId: string) => {
@@ -209,74 +228,11 @@ export default function ResumeBuilder() {
   };
 
   const handleDownloadPDF = () => {
-    const resumeElement = document.querySelector('.a4-preview');
-    if (!resumeElement) return;
-
-    // Create a new window for printing
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
-
-    // Get all stylesheets
-    const stylesheets = Array.from(document.styleSheets)
-      .map(sheet => {
-        try {
-          return Array.from(sheet.cssRules)
-            .map(rule => rule.cssText)
-            .join('\n');
-        } catch (e) {
-          return '';
-        }
-      })
-      .join('\n');
-
-    // Create the print document
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Resume - ${data.name}</title>
-          <style>
-            ${stylesheets}
-            @page {
-              size: A4;
-              margin: 0;
-            }
-            body {
-              margin: 0;
-              padding: 0;
-              font-family: Inter, system-ui, sans-serif;
-            }
-            .resume-container {
-              width: 210mm;
-              height: 297mm;
-              margin: 0 auto;
-              background: white;
-            }
-            @media print {
-              body { margin: 0; }
-              .resume-container { 
-                width: 100%; 
-                height: 100vh; 
-                margin: 0;
-              }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="resume-container">
-            ${resumeElement.innerHTML}
-          </div>
-        </body>
-      </html>
-    `);
-
-    printWindow.document.close();
-
-    // Wait for content to load then trigger download
-    setTimeout(() => {
-      printWindow.print();
-      printWindow.close();
-    }, 500);
+    generatePDF({
+      resumeData,
+      style: currentStyle,
+      templateId,
+    });
   };
 
   const handlePrint = () => {
@@ -350,7 +306,7 @@ export default function ResumeBuilder() {
   };
 
   const renderTemplate = () => {
-    const props = { data: resumeData, style: styleSettings };
+    const props = { data: resumeData, style: currentStyle };
 
     switch (templateId) {
       case "1":
@@ -412,18 +368,20 @@ case "16":
       case "references":
         return <ReferencesSection {...commonProps} />;
       case "customize":
-        return <StyleSection style={styleSettings} presets={presets} onStyleChange={handleStyleChange} templateId={templateId} />;
+        return <StyleSection style={currentStyle} presets={presets} onStyleChange={handleStyleChange} templateId={templateId} />;
       default:
         return <BioSection {...commonProps} />;
     }
   };
 
-  if (isLoading) {
+  if (isLoading || styleLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Loading resume...</p>
+          <p className="text-muted-foreground">
+            {isLoading ? "Loading resume..." : "Loading styles..."}
+          </p>
         </div>
       </div>
     );
@@ -448,11 +406,16 @@ case "16":
               data-testid="button-autosave"
             >
               <Save className="mr-2 h-4 w-4" />
-              {updateResumeMutation.isPending ? "Saving..." : "Auto-saved"}
+              {updateResumeMutation.isPending || isSaving ? "Saving..." : "Auto-saved"}
             </Button>
-            <Button size="sm" data-testid="button-download">
+            <Button 
+              size="sm" 
+              onClick={handleDownloadPDF}
+              disabled={isGenerating}
+              data-testid="button-download"
+            >
               <Download className="mr-2 h-4 w-4" />
-              Download PDF
+              {isGenerating ? "Generating..." : "Download PDF"}
             </Button>
             <Button
               variant="outline"
@@ -481,24 +444,11 @@ case "16":
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {/* <SelectItem value="1">Professional Dark</SelectItem>
-                  <SelectItem value="2">Modern Clean</SelectItem>
-                  <SelectItem value="3">Executive</SelectItem>
-                  <SelectItem value="4">Corporate</SelectItem> */}
-                  <SelectItem value="5">Mariana Anderson</SelectItem>
-                  <SelectItem value="6">Francisco Andrade</SelectItem>
-                  {/* <SelectItem value="7">Lorna Alvarado</SelectItem> */}
-                  <SelectItem value="8">Richard Sanchez</SelectItem>
-                  <SelectItem value="9">Olivia Wilson</SelectItem>
-                  {/* <SelectItem value="10">Korina Professional</SelectItem> */}
-                  {/* <SelectItem value="11">Aron Modern</SelectItem> */}
-                  <SelectItem value="12">Lorna Executive</SelectItem>
-                  {/* <SelectItem value="13">Richard Timeline</SelectItem> */}
-                  <SelectItem value="14">Diagonal Blue</SelectItem>
-                  <SelectItem value="15">Diagonal Blue</SelectItem>
-                  {/* <SelectItem value="16">Diagonal Blue</SelectItem> */}
-
-
+                  {templates?.map((template) => (
+                    <SelectItem key={template.id} value={template.id}>
+                      {template.name}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
